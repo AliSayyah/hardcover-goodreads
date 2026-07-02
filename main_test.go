@@ -41,6 +41,42 @@ func TestCSVRow(t *testing.T) {
 	}
 }
 
+func TestCSVRowPrefersCanonicalBookTitleAndAuthor(t *testing.T) {
+	row := csvRow(userBook{
+		StatusID: 1,
+		Book: book{
+			Title:              "The Dark Forest",
+			CachedContributors: []any{map[string]any{"author": map[string]any{"name": "Cixin Liu"}}},
+		},
+		Edition: &edition{
+			Title:              "The Dark Forest: Remembrance of Earth's Past, Book 2",
+			CachedContributors: []any{map[string]any{"author": map[string]any{"name": "Eisso Post"}}},
+		},
+	})
+
+	if row[1] != "The Dark Forest" {
+		t.Fatalf("title = %q", row[1])
+	}
+	if row[2] != "Cixin Liu" {
+		t.Fatalf("author = %q", row[2])
+	}
+}
+
+func TestGoodreadsISBNNormalizesOnlyValidISBNs(t *testing.T) {
+	tests := map[string]string{
+		"9780441172719": `="9780441172719"`,
+		"316605425":     `="0316605425"`,
+		"0-439-42089-X": `="043942089X"`,
+		"9870575084162": "",
+		"0345253434195": "",
+	}
+	for input, want := range tests {
+		if got := goodreadsISBN(input); got != want {
+			t.Fatalf("goodreadsISBN(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestTokenForExportNormalizesTypedToken(t *testing.T) {
 	got, err := tokenForExport("abc123")
 	if err != nil {

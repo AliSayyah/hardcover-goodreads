@@ -617,12 +617,9 @@ func csvFile(books []userBook) ([]byte, error) {
 
 func csvRow(ub userBook) []string {
 	ed := ub.Edition
-	names := contributorNames(nil)
-	if ed != nil {
+	names := contributorNames(ub.Book.CachedContributors)
+	if len(names) == 0 && ed != nil {
 		names = contributorNames(ed.CachedContributors)
-	}
-	if len(names) == 0 {
-		names = contributorNames(ub.Book.CachedContributors)
 	}
 
 	shelf := statusToShelf[ub.StatusID]
@@ -634,10 +631,9 @@ func csvRow(ub userBook) []string {
 		readCount = 1
 	}
 
-	editionTitle, editionSubtitle, isbn10, isbn13, binding, publisherName, editionDate, editionPages := "", "", "", "", "", "", "", any(nil)
+	editionTitle, isbn10, isbn13, binding, publisherName, editionDate, editionPages := "", "", "", "", "", "", any(nil)
 	if ed != nil {
 		editionTitle = ed.Title
-		editionSubtitle = ed.Subtitle
 		isbn10 = ed.ISBN10
 		isbn13 = ed.ISBN13
 		binding = ed.PhysicalFormat
@@ -655,7 +651,7 @@ func csvRow(ub userBook) []string {
 
 	return []string{
 		"",
-		bookTitle(editionTitle, editionSubtitle, ub.Book.Title, ub.Book.Subtitle),
+		bookTitle(ub.Book.Title, editionTitle),
 		first(names),
 		"",
 		strings.Join(rest(names), ", "),
@@ -726,26 +722,75 @@ func unique(values []string) []string {
 	return out
 }
 
-func bookTitle(editionTitle, editionSubtitle, bookTitle, bookSubtitle string) string {
-	title := firstNonEmpty(editionTitle, bookTitle)
-	subtitle := firstNonEmpty(editionSubtitle, bookSubtitle)
-	if subtitle != "" && !strings.Contains(title, subtitle) {
-		return title + ": " + subtitle
-	}
-	return title
+func bookTitle(bookTitle, editionTitle string) string {
+	return firstNonEmpty(bookTitle, editionTitle)
 }
 
 func goodreadsISBN(value string) string {
-	digits := strings.Map(func(r rune) rune {
-		if r >= '0' && r <= '9' {
-			return r
-		}
-		return -1
-	}, value)
-	if digits == "" {
+	isbn := normalizedISBN(value)
+	if isbn == "" {
 		return ""
 	}
-	return `="` + digits + `"`
+	return `="` + isbn + `"`
+}
+
+func normalizedISBN(value string) string {
+	var chars []rune
+	for _, r := range strings.ToUpper(value) {
+		if r >= '0' && r <= '9' {
+			chars = append(chars, r)
+		} else if r == 'X' {
+			chars = append(chars, r)
+		}
+	}
+	isbn := string(chars)
+	if len(isbn) == 9 && validISBN10("0"+isbn) {
+		return "0" + isbn
+	}
+	if len(isbn) == 10 && validISBN10(isbn) {
+		return isbn
+	}
+	if len(isbn) == 13 && validISBN13(isbn) {
+		return isbn
+	}
+	return ""
+}
+
+func validISBN10(isbn string) bool {
+	if len(isbn) != 10 {
+		return false
+	}
+	sum := 0
+	for i, r := range isbn {
+		var n int
+		if r == 'X' && i == 9 {
+			n = 10
+		} else if r >= '0' && r <= '9' {
+			n = int(r - '0')
+		} else {
+			return false
+		}
+		sum += n * (10 - i)
+	}
+	return sum%11 == 0
+}
+
+func validISBN13(isbn string) bool {
+	if len(isbn) != 13 || !strings.HasPrefix(isbn, "978") && !strings.HasPrefix(isbn, "979") {
+		return false
+	}
+	sum := 0
+	for i, r := range isbn {
+		if r < '0' || r > '9' {
+			return false
+		}
+		n := int(r - '0')
+		if i%2 == 1 {
+			n *= 3
+		}
+		sum += n
+	}
+	return sum%10 == 0
 }
 
 func goodreadsRating(value any) string {
