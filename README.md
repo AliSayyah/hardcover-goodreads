@@ -33,7 +33,7 @@ The JSON download is the full local backup.
 ## Usage
 
 ```bash
-hardcover-goodreads                 # start on :8080 and open the browser
+hardcover-goodreads                 # start on :8080, or the next free port, and open the browser
 hardcover-goodreads -no-open        # start without opening the browser
 hardcover-goodreads -addr :9090     # use a different port
 hardcover-goodreads -version

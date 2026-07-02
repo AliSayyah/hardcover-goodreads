@@ -29,6 +29,7 @@ import (
 const endpoint = "https://api.hardcover.app/v1/graphql"
 const keyringService = "hardcover-goodreads"
 const keyringUser = "hardcover-token"
+const portFallbacks = 20
 
 var version = "dev"
 
@@ -217,7 +218,7 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
 </html>`))
 
 func main() {
-	addr := flag.String("addr", ":8080", "address to listen on")
+	addr := flag.String("addr", ":8080", "address to listen on; if busy, tries the next ports")
 	noOpen := flag.Bool("no-open", false, "do not open the browser")
 	showVersion := flag.Bool("version", false, "print version")
 	flag.Parse()
@@ -237,7 +238,7 @@ func main() {
 	mux.HandleFunc("/forget", a.forget)
 	mux.HandleFunc("/download/", a.download)
 
-	listener, err := net.Listen("tcp", *addr)
+	listener, err := listenWithFallback(*addr)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -254,6 +255,29 @@ func main() {
 	if err := http.Serve(listener, mux); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func listenWithFallback(addr string) (net.Listener, error) {
+	listener, err := net.Listen("tcp", addr)
+	if err == nil {
+		return listener, nil
+	}
+
+	host, portText, splitErr := net.SplitHostPort(addr)
+	port, atoiErr := strconv.Atoi(portText)
+	if splitErr != nil || atoiErr != nil || port == 0 {
+		return nil, err
+	}
+
+	lastErr := err
+	for next := port + 1; next <= port+portFallbacks && next <= 65535; next++ {
+		listener, lastErr = net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(next)))
+		if lastErr == nil {
+			log.Printf("%s unavailable, using %s", addr, listener.Addr().String())
+			return listener, nil
+		}
+	}
+	return nil, fmt.Errorf("could not listen on %s or the next %d ports: %w", addr, portFallbacks, lastErr)
 }
 
 func localURL(addr string) string {

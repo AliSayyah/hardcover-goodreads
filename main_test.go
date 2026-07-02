@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"net"
+	"strconv"
 	"testing"
 
 	"github.com/zalando/go-keyring"
@@ -75,5 +77,43 @@ func TestLocalURL(t *testing.T) {
 		if got := localURL(input); got != want {
 			t.Fatalf("localURL(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestListenWithFallbackUsesNextFreePort(t *testing.T) {
+	blocker, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close()
+
+	_, portText, err := net.SplitHostPort(blocker.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedPort, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blockedPort > 65535-portFallbacks {
+		t.Skip("random port too close to end of range")
+	}
+
+	listener, err := listenWithFallback(net.JoinHostPort("127.0.0.1", portText))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	_, fallbackPortText, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallbackPort, err := strconv.Atoi(fallbackPortText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallbackPort <= blockedPort || fallbackPort > blockedPort+portFallbacks {
+		t.Fatalf("fallback port = %d, want in (%d, %d]", fallbackPort, blockedPort, blockedPort+portFallbacks)
 	}
 }
