@@ -167,6 +167,7 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
     label.check input { width: auto; }
     button, a.button { width: fit-content; font: inherit; font-weight: 700; padding: 11px 14px; border: 0; border-radius: 6px; background: #14532d; color: white; text-decoration: none; cursor: pointer; }
     button.secondary { background: #475569; }
+    a.button.secondary { background: #475569; }
     .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 4px; }
     .error { padding: 12px; border-left: 4px solid #b91c1c; background: color-mix(in srgb, #b91c1c 12%, Canvas); }
     .notice { padding: 12px; border-left: 4px solid #14532d; background: color-mix(in srgb, #14532d 12%, Canvas); }
@@ -183,14 +184,18 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
   <form method="post" action="/export">
     <label>Hardcover token
       <input name="token" type="password" autocomplete="off" {{if not .HasSavedToken}}required{{end}}>
+      <span class="muted">Your Hardcover API token, not Goodreads. Get it from your Hardcover account API page.</span>
     </label>
-    <label>User ID
+    <label>Hardcover user ID
       <input name="user_id" inputmode="numeric" autocomplete="off" value="{{.UserID}}" placeholder="optional">
+      <span class="muted">Optional. Leave blank and the app will read your Hardcover user ID from the token.</span>
     </label>
     <label class="check"><input name="save_token" type="checkbox"> Save token in OS keychain</label>
+    <span class="muted">Saved only after a successful export. You can forget it later from this page.</span>
     <div class="actions">
       <button type="submit">Export</button>
-      <a href="https://www.goodreads.com/review/import">Goodreads Import</a>
+      <a class="button secondary" href="https://hardcover.app/account/api" target="_blank" rel="noreferrer">Open Hardcover API Key Page</a>
+      <a href="https://www.goodreads.com/review/import" target="_blank" rel="noreferrer">Goodreads Import</a>
     </div>
   </form>
   {{if .HasSavedToken}}

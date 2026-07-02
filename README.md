@@ -22,9 +22,9 @@ It opens <http://localhost:8080> automatically.
 
 ## Quick Start
 
-1. Get your Hardcover token from <https://hardcover.app/account/api>.
-2. Run `hardcover-goodreads`.
-3. Paste the token into the local page.
+1. Run `hardcover-goodreads`.
+2. Click "Open Hardcover API Key Page" in the app, or open <https://hardcover.app/account/api>.
+3. Paste the Hardcover token into the local page.
 4. Check "Save token in OS keychain" if you want to reuse it later.
 5. Export the CSV, then upload it at <https://www.goodreads.com/review/import>.
 
