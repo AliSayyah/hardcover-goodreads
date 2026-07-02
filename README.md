@@ -54,6 +54,3 @@ Push a tag and GitHub Actions will publish binaries:
 git tag v0.1.0
 git push origin v0.1.0
 ```
-
-Skipped: automatic Goodreads upload. Add it only if manual upload becomes the
-annoying part, and expect it to be a brittle Playwright script.
