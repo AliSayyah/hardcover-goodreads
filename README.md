@@ -18,6 +18,8 @@ Then run:
 hardcover-goodreads
 ```
 
+It opens <http://localhost:8080> automatically.
+
 ## Use
 
 1. Get your Hardcover token from <https://hardcover.app/account/api>.
@@ -27,11 +29,12 @@ hardcover-goodreads
 go run -buildvcs=false .
 ```
 
-3. Open <http://localhost:8080>.
+3. The browser opens <http://localhost:8080>.
 4. Export the CSV, then upload it at <https://www.goodreads.com/review/import>.
 
 The JSON download is the full local backup.
 Check "Save token in OS keychain" after pasting your token once to reuse it later.
+Use `-no-open` when running on a headless machine.
 
 ## Why this shape
 

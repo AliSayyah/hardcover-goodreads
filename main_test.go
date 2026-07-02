@@ -63,3 +63,17 @@ func TestTokenForExportUsesSavedToken(t *testing.T) {
 		t.Fatalf("token = %q", got)
 	}
 }
+
+func TestLocalURL(t *testing.T) {
+	tests := map[string]string{
+		"[::]:8080":      "http://localhost:8080",
+		"0.0.0.0:9090":   "http://localhost:9090",
+		"127.0.0.1:1234": "http://127.0.0.1:1234",
+		"localhost:5555": "http://localhost:5555",
+	}
+	for input, want := range tests {
+		if got := localURL(input); got != want {
+			t.Fatalf("localURL(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

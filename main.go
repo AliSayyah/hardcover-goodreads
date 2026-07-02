@@ -14,7 +14,10 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -210,6 +213,7 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
 
 func main() {
 	addr := flag.String("addr", ":8080", "address to listen on")
+	noOpen := flag.Bool("no-open", false, "do not open the browser")
 	showVersion := flag.Bool("version", false, "print version")
 	flag.Parse()
 	if *showVersion {
@@ -228,9 +232,44 @@ func main() {
 	mux.HandleFunc("/forget", a.forget)
 	mux.HandleFunc("/download/", a.download)
 
-	log.Printf("listening on http://localhost%s", *addr)
-	if err := http.ListenAndServe(*addr, mux); err != nil {
+	listener, err := net.Listen("tcp", *addr)
+	if err != nil {
 		log.Fatal(err)
+	}
+	url := localURL(listener.Addr().String())
+	log.Printf("listening on %s", url)
+	if !*noOpen {
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			if err := openBrowser(url); err != nil {
+				log.Printf("could not open browser: %v", err)
+			}
+		}()
+	}
+	if err := http.Serve(listener, mux); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func localURL(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "http://" + addr
+	}
+	if host == "" || host == "::" || host == "0.0.0.0" || host == "[::]" {
+		host = "localhost"
+	}
+	return "http://" + net.JoinHostPort(host, port)
+}
+
+func openBrowser(url string) error {
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.Command("open", url).Start()
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	default:
+		return exec.Command("xdg-open", url).Start()
 	}
 }
 
