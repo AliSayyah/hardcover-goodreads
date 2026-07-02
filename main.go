@@ -19,9 +19,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zalando/go-keyring"
 )
 
 const endpoint = "https://api.hardcover.app/v1/graphql"
+const keyringService = "hardcover-goodreads"
+const keyringUser = "hardcover-token"
 
 var version = "dev"
 
@@ -134,10 +138,12 @@ type publisher struct {
 }
 
 type pageData struct {
-	Error    string
-	UserID   string
-	ExportID string
-	Count    int
+	Error         string
+	Notice        string
+	UserID        string
+	ExportID      string
+	Count         int
+	HasSavedToken bool
 }
 
 var page = template.Must(template.New("page").Parse(`<!doctype html>
@@ -153,10 +159,14 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
     h1 { font-size: 2rem; margin: 0 0 28px; letter-spacing: 0; }
     form { display: grid; gap: 18px; }
     label { display: grid; gap: 6px; font-weight: 650; }
+    label.check { display: flex; gap: 8px; align-items: center; font-weight: 500; }
     input { width: 100%; box-sizing: border-box; font: inherit; padding: 11px 12px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); border-radius: 6px; background: Canvas; color: CanvasText; }
+    label.check input { width: auto; }
     button, a.button { width: fit-content; font: inherit; font-weight: 700; padding: 11px 14px; border: 0; border-radius: 6px; background: #14532d; color: white; text-decoration: none; cursor: pointer; }
+    button.secondary { background: #475569; }
     .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 4px; }
     .error { padding: 12px; border-left: 4px solid #b91c1c; background: color-mix(in srgb, #b91c1c 12%, Canvas); }
+    .notice { padding: 12px; border-left: 4px solid #14532d; background: color-mix(in srgb, #14532d 12%, Canvas); }
     .result { margin-top: 28px; padding-top: 24px; border-top: 1px solid color-mix(in srgb, CanvasText 16%, transparent); }
     .muted { color: color-mix(in srgb, CanvasText 68%, Canvas); font-size: .95rem; }
   </style>
@@ -165,18 +175,26 @@ var page = template.Must(template.New("page").Parse(`<!doctype html>
 <main>
   <h1>Hardcover to Goodreads</h1>
   {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+  {{if .Notice}}<p class="notice">{{.Notice}}</p>{{end}}
+  {{if .HasSavedToken}}<p class="muted">A saved Hardcover token is available. Leave the token blank to use it.</p>{{end}}
   <form method="post" action="/export">
     <label>Hardcover token
-      <input name="token" type="password" autocomplete="off" required>
+      <input name="token" type="password" autocomplete="off" {{if not .HasSavedToken}}required{{end}}>
     </label>
     <label>User ID
       <input name="user_id" inputmode="numeric" autocomplete="off" value="{{.UserID}}" placeholder="optional">
     </label>
+    <label class="check"><input name="save_token" type="checkbox"> Save token in OS keychain</label>
     <div class="actions">
       <button type="submit">Export</button>
       <a href="https://www.goodreads.com/review/import">Goodreads Import</a>
     </div>
   </form>
+  {{if .HasSavedToken}}
+  <form method="post" action="/forget">
+    <button class="secondary" type="submit">Forget saved token</button>
+  </form>
+  {{end}}
   {{if .ExportID}}
   <section class="result">
     <p>{{.Count}} books exported.</p>
@@ -207,6 +225,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", a.index)
 	mux.HandleFunc("/export", a.export)
+	mux.HandleFunc("/forget", a.forget)
 	mux.HandleFunc("/download/", a.download)
 
 	log.Printf("listening on http://localhost%s", *addr)
@@ -220,7 +239,7 @@ func (a *app) index(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	render(w, pageData{})
+	render(w, newPageData(""))
 }
 
 func (a *app) export(w http.ResponseWriter, r *http.Request) {
@@ -233,38 +252,49 @@ func (a *app) export(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := normalizeToken(r.FormValue("token"))
-	if token == "" {
-		render(w, pageData{Error: "Hardcover token is required."})
+	rawToken := r.FormValue("token")
+	token, err := tokenForExport(rawToken)
+	if err != nil {
+		render(w, newPageData(err.Error()))
 		return
 	}
 
 	userID, err := parseUserID(r.Context(), a.client, token, r.FormValue("user_id"))
 	if err != nil {
-		render(w, pageData{Error: err.Error(), UserID: r.FormValue("user_id")})
+		data := newPageData(err.Error())
+		data.UserID = r.FormValue("user_id")
+		render(w, data)
 		return
 	}
 
 	books, err := fetchLibrary(r.Context(), a.client, token, userID)
 	if err != nil {
-		render(w, pageData{Error: err.Error(), UserID: strconv.Itoa(userID)})
+		data := newPageData(err.Error())
+		data.UserID = strconv.Itoa(userID)
+		render(w, data)
 		return
 	}
 
 	csvBytes, err := csvFile(books)
 	if err != nil {
-		render(w, pageData{Error: err.Error(), UserID: strconv.Itoa(userID)})
+		data := newPageData(err.Error())
+		data.UserID = strconv.Itoa(userID)
+		render(w, data)
 		return
 	}
 	jsonBytes, err := json.MarshalIndent(books, "", "  ")
 	if err != nil {
-		render(w, pageData{Error: err.Error(), UserID: strconv.Itoa(userID)})
+		data := newPageData(err.Error())
+		data.UserID = strconv.Itoa(userID)
+		render(w, data)
 		return
 	}
 
 	id, err := randomID()
 	if err != nil {
-		render(w, pageData{Error: err.Error(), UserID: strconv.Itoa(userID)})
+		data := newPageData(err.Error())
+		data.UserID = strconv.Itoa(userID)
+		render(w, data)
 		return
 	}
 
@@ -273,7 +303,34 @@ func (a *app) export(w http.ResponseWriter, r *http.Request) {
 	a.exports[id] = exportFiles{csv: csvBytes, json: jsonBytes}
 	a.mu.Unlock()
 
-	render(w, pageData{ExportID: id, Count: len(books), UserID: strconv.Itoa(userID)})
+	data := newPageData("")
+	data.ExportID = id
+	data.Count = len(books)
+	data.UserID = strconv.Itoa(userID)
+	if r.FormValue("save_token") == "on" && strings.TrimSpace(rawToken) != "" {
+		if err := keyring.Set(keyringService, keyringUser, token); err != nil {
+			data.Error = "Exported, but could not save token: " + err.Error()
+		} else {
+			data.Notice = "Token saved in your OS keychain."
+			data.HasSavedToken = true
+		}
+	}
+	render(w, data)
+}
+
+func (a *app) forget(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	err := keyring.Delete(keyringService, keyringUser)
+	if err != nil && !errors.Is(err, keyring.ErrNotFound) {
+		render(w, newPageData("Could not forget token: "+err.Error()))
+		return
+	}
+	data := newPageData("")
+	data.Notice = "Saved token forgotten."
+	render(w, data)
 }
 
 func (a *app) download(w http.ResponseWriter, r *http.Request) {
@@ -310,6 +367,28 @@ func render(w http.ResponseWriter, data pageData) {
 	if err := page.Execute(w, data); err != nil {
 		log.Println(err)
 	}
+}
+
+func newPageData(message string) pageData {
+	data := pageData{Error: message}
+	if _, err := keyring.Get(keyringService, keyringUser); err == nil {
+		data.HasSavedToken = true
+	}
+	return data
+}
+
+func tokenForExport(raw string) (string, error) {
+	if token := normalizeToken(raw); token != "" {
+		return token, nil
+	}
+	token, err := keyring.Get(keyringService, keyringUser)
+	if err == nil {
+		return token, nil
+	}
+	if errors.Is(err, keyring.ErrNotFound) {
+		return "", errors.New("Hardcover token is required.")
+	}
+	return "", fmt.Errorf("could not read saved token: %w", err)
 }
 
 func parseUserID(ctx context.Context, client *http.Client, token, raw string) (int, error) {

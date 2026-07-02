@@ -31,13 +31,14 @@ go run -buildvcs=false .
 4. Export the CSV, then upload it at <https://www.goodreads.com/review/import>.
 
 The JSON download is the full local backup.
+Check "Save token in OS keychain" after pasting your token once to reuse it later.
 
 ## Why this shape
 
 - One-way only: Hardcover -> Goodreads.
 - No Goodreads password stored locally.
+- Hardcover token storage uses the OS keychain: macOS Keychain, Windows Credential Manager, or Linux Secret Service.
 - No browser automation that breaks when Goodreads changes HTML or asks for MFA.
-- No dependencies.
 
 Run the check with:
 

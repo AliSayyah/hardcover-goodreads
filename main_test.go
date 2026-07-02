@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/zalando/go-keyring"
 )
 
 func TestCSVRow(t *testing.T) {
@@ -34,5 +36,30 @@ func TestCSVRow(t *testing.T) {
 		if row[column] != want {
 			t.Fatalf("column %d = %q, want %q", column, row[column], want)
 		}
+	}
+}
+
+func TestTokenForExportNormalizesTypedToken(t *testing.T) {
+	got, err := tokenForExport("abc123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "Bearer abc123" {
+		t.Fatalf("token = %q", got)
+	}
+}
+
+func TestTokenForExportUsesSavedToken(t *testing.T) {
+	keyring.MockInit()
+	if err := keyring.Set(keyringService, keyringUser, "Bearer saved"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := tokenForExport("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "Bearer saved" {
+		t.Fatalf("token = %q", got)
 	}
 }
