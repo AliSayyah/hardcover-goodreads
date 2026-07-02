@@ -16,3 +16,13 @@ jobs:
           cache: false
       - run: go test ./...
       - run: go build -buildvcs=false ./...
+
+  windows-install:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - shell: pwsh
+        run: |
+          $binDir = Join-Path $env:RUNNER_TEMP "hg-bin"
+          .\install.ps1 -BinDir $binDir
+          & (Join-Path $binDir "hardcover-goodreads.exe") -version

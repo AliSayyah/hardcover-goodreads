@@ -8,11 +8,23 @@ a Goodreads import CSV you upload manually.
 
 ## Install
 
+macOS/Linux:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AliSayyah/hardcover-goodreads/main/install.sh | sh
 ```
 
-Make sure `~/.local/bin` is on your `PATH`, then run:
+Make sure `~/.local/bin` is on your `PATH`.
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/AliSayyah/hardcover-goodreads/main/install.ps1 | iex
+```
+
+The Windows installer adds the app to your user `PATH`.
+
+Then run:
 
 ```bash
 hardcover-goodreads
