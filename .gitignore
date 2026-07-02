@@ -1,0 +1,4 @@
+*.csv
+*.json
+hardcover-goodreads
+dist/

@@ -1,0 +1,707 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/csv"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"html/template"
+	"io"
+	"log"
+	"math"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+const endpoint = "https://api.hardcover.app/v1/graphql"
+
+var version = "dev"
+
+var csvColumns = []string{
+	"Book Id",
+	"Title",
+	"Author",
+	"Author l-f",
+	"Additional Authors",
+	"ISBN",
+	"ISBN13",
+	"My Rating",
+	"Average Rating",
+	"Publisher",
+	"Binding",
+	"Number of Pages",
+	"Year Published",
+	"Original Publication Year",
+	"Date Read",
+	"Date Added",
+	"Bookshelves",
+	"Bookshelves with positions",
+	"Exclusive Shelf",
+	"My Review",
+	"Spoiler",
+	"Private Notes",
+	"Read Count",
+	"Owned Copies",
+}
+
+var statusToShelf = map[int]string{
+	1: "to-read",
+	2: "currently-reading",
+	3: "read",
+	4: "paused",
+	5: "did-not-finish",
+	6: "ignored",
+}
+
+type app struct {
+	client  *http.Client
+	mu      sync.Mutex
+	exports map[string]exportFiles
+}
+
+type exportFiles struct {
+	csv  []byte
+	json []byte
+}
+
+type graphQLRequest struct {
+	Query     string         `json:"query"`
+	Variables map[string]any `json:"variables,omitempty"`
+}
+
+type graphQLResponse[T any] struct {
+	Data   T              `json:"data"`
+	Errors []graphQLError `json:"errors"`
+}
+
+type graphQLError struct {
+	Message string `json:"message"`
+}
+
+type libraryData struct {
+	UserBooks []userBook `json:"user_books"`
+}
+
+type userBook struct {
+	ID                      int      `json:"id"`
+	DateAdded               string   `json:"date_added"`
+	FirstReadDate           string   `json:"first_read_date"`
+	FirstStartedReadingDate string   `json:"first_started_reading_date"`
+	LastReadDate            string   `json:"last_read_date"`
+	OwnedCopies             any      `json:"owned_copies"`
+	PrivateNotes            string   `json:"private_notes"`
+	Rating                  any      `json:"rating"`
+	ReadCount               int      `json:"read_count"`
+	Review                  string   `json:"review"`
+	ReviewHasSpoilers       bool     `json:"review_has_spoilers"`
+	ReviewRaw               string   `json:"review_raw"`
+	StatusID                int      `json:"status_id"`
+	Book                    book     `json:"book"`
+	Edition                 *edition `json:"edition"`
+}
+
+type book struct {
+	ID                 int    `json:"id"`
+	CachedContributors any    `json:"cached_contributors"`
+	Pages              any    `json:"pages"`
+	ReleaseDate        string `json:"release_date"`
+	Subtitle           string `json:"subtitle"`
+	Title              string `json:"title"`
+}
+
+type edition struct {
+	CachedContributors any        `json:"cached_contributors"`
+	ISBN10             string     `json:"isbn_10"`
+	ISBN13             string     `json:"isbn_13"`
+	Pages              any        `json:"pages"`
+	PhysicalFormat     string     `json:"physical_format"`
+	Publisher          *publisher `json:"publisher"`
+	ReleaseDate        string     `json:"release_date"`
+	Subtitle           string     `json:"subtitle"`
+	Title              string     `json:"title"`
+}
+
+type publisher struct {
+	Name string `json:"name"`
+}
+
+type pageData struct {
+	Error    string
+	UserID   string
+	ExportID string
+	Count    int
+}
+
+var page = template.Must(template.New("page").Parse(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hardcover to Goodreads</title>
+  <style>
+    :root { color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    body { margin: 0; background: Canvas; color: CanvasText; }
+    main { max-width: 760px; margin: 0 auto; padding: 40px 20px; }
+    h1 { font-size: 2rem; margin: 0 0 28px; letter-spacing: 0; }
+    form { display: grid; gap: 18px; }
+    label { display: grid; gap: 6px; font-weight: 650; }
+    input { width: 100%; box-sizing: border-box; font: inherit; padding: 11px 12px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); border-radius: 6px; background: Canvas; color: CanvasText; }
+    button, a.button { width: fit-content; font: inherit; font-weight: 700; padding: 11px 14px; border: 0; border-radius: 6px; background: #14532d; color: white; text-decoration: none; cursor: pointer; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 4px; }
+    .error { padding: 12px; border-left: 4px solid #b91c1c; background: color-mix(in srgb, #b91c1c 12%, Canvas); }
+    .result { margin-top: 28px; padding-top: 24px; border-top: 1px solid color-mix(in srgb, CanvasText 16%, transparent); }
+    .muted { color: color-mix(in srgb, CanvasText 68%, Canvas); font-size: .95rem; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Hardcover to Goodreads</h1>
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+  <form method="post" action="/export">
+    <label>Hardcover token
+      <input name="token" type="password" autocomplete="off" required>
+    </label>
+    <label>User ID
+      <input name="user_id" inputmode="numeric" autocomplete="off" value="{{.UserID}}" placeholder="optional">
+    </label>
+    <div class="actions">
+      <button type="submit">Export</button>
+      <a href="https://www.goodreads.com/review/import">Goodreads Import</a>
+    </div>
+  </form>
+  {{if .ExportID}}
+  <section class="result">
+    <p>{{.Count}} books exported.</p>
+    <div class="actions">
+      <a class="button" href="/download/{{.ExportID}}/goodreads_import.csv">CSV</a>
+      <a class="button" href="/download/{{.ExportID}}/hardcover_library.json">JSON</a>
+    </div>
+  </section>
+  {{end}}
+</main>
+</body>
+</html>`))
+
+func main() {
+	addr := flag.String("addr", ":8080", "address to listen on")
+	showVersion := flag.Bool("version", false, "print version")
+	flag.Parse()
+	if *showVersion {
+		fmt.Println("hardcover-goodreads", version)
+		return
+	}
+
+	a := &app{
+		client:  &http.Client{Timeout: 30 * time.Second},
+		exports: map[string]exportFiles{},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", a.index)
+	mux.HandleFunc("/export", a.export)
+	mux.HandleFunc("/download/", a.download)
+
+	log.Printf("listening on http://localhost%s", *addr)
+	if err := http.ListenAndServe(*addr, mux); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func (a *app) index(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	render(w, pageData{})
+}
+
+func (a *app) export(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		render(w, pageData{Error: err.Error()})
+		return
+	}
+
+	token := normalizeToken(r.FormValue("token"))
+	if token == "" {
+		render(w, pageData{Error: "Hardcover token is required."})
+		return
+	}
+
+	userID, err := parseUserID(r.Context(), a.client, token, r.FormValue("user_id"))
+	if err != nil {
+		render(w, pageData{Error: err.Error(), UserID: r.FormValue("user_id")})
+		return
+	}
+
+	books, err := fetchLibrary(r.Context(), a.client, token, userID)
+	if err != nil {
+		render(w, pageData{Error: err.Error(), UserID: strconv.Itoa(userID)})
+		return
+	}
+
+	csvBytes, err := csvFile(books)
+	if err != nil {
+		render(w, pageData{Error: err.Error(), UserID: strconv.Itoa(userID)})
+		return
+	}
+	jsonBytes, err := json.MarshalIndent(books, "", "  ")
+	if err != nil {
+		render(w, pageData{Error: err.Error(), UserID: strconv.Itoa(userID)})
+		return
+	}
+
+	id, err := randomID()
+	if err != nil {
+		render(w, pageData{Error: err.Error(), UserID: strconv.Itoa(userID)})
+		return
+	}
+
+	a.mu.Lock()
+	// ponytail: local single-user app; add expiry if this becomes a daemon.
+	a.exports[id] = exportFiles{csv: csvBytes, json: jsonBytes}
+	a.mu.Unlock()
+
+	render(w, pageData{ExportID: id, Count: len(books), UserID: strconv.Itoa(userID)})
+}
+
+func (a *app) download(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/download/"), "/")
+	if len(parts) != 2 {
+		http.NotFound(w, r)
+		return
+	}
+
+	a.mu.Lock()
+	files, ok := a.exports[parts[0]]
+	a.mu.Unlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch parts[1] {
+	case "goodreads_import.csv":
+		w.Header().Set("content-type", "text/csv; charset=utf-8")
+		w.Header().Set("content-disposition", `attachment; filename="goodreads_import.csv"`)
+		_, _ = w.Write(files.csv)
+	case "hardcover_library.json":
+		w.Header().Set("content-type", "application/json; charset=utf-8")
+		w.Header().Set("content-disposition", `attachment; filename="hardcover_library.json"`)
+		_, _ = w.Write(files.json)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func render(w http.ResponseWriter, data pageData) {
+	w.Header().Set("content-type", "text/html; charset=utf-8")
+	if err := page.Execute(w, data); err != nil {
+		log.Println(err)
+	}
+}
+
+func parseUserID(ctx context.Context, client *http.Client, token, raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw != "" {
+		id, err := strconv.Atoi(raw)
+		if err != nil || id <= 0 {
+			return 0, errors.New("User ID must be a positive number.")
+		}
+		return id, nil
+	}
+	return getUserID(ctx, client, token)
+}
+
+func getUserID(ctx context.Context, client *http.Client, token string) (int, error) {
+	var out struct {
+		Me json.RawMessage `json:"me"`
+	}
+	if err := graphql(ctx, client, token, "query { me { id } }", nil, &out); err != nil {
+		return 0, err
+	}
+
+	var one struct {
+		ID int `json:"id"`
+	}
+	if json.Unmarshal(out.Me, &one) == nil && one.ID > 0 {
+		return one.ID, nil
+	}
+
+	var many []struct {
+		ID int `json:"id"`
+	}
+	if json.Unmarshal(out.Me, &many) == nil && len(many) > 0 && many[0].ID > 0 {
+		return many[0].ID, nil
+	}
+	return 0, errors.New("could not read user id from Hardcover response")
+}
+
+func fetchLibrary(ctx context.Context, client *http.Client, token string, userID int) ([]userBook, error) {
+	const query = `
+query Library($userId: Int!, $limit: Int!, $offset: Int!) {
+  user_books(
+    where: {user_id: {_eq: $userId}},
+    order_by: {id: asc},
+    limit: $limit,
+    offset: $offset
+  ) {
+    id
+    date_added
+    first_read_date
+    first_started_reading_date
+    last_read_date
+    owned_copies
+    private_notes
+    rating
+    read_count
+    review
+    review_has_spoilers
+    review_raw
+    status_id
+    book {
+      id
+      cached_contributors
+      pages
+      release_date
+      subtitle
+      title
+    }
+    edition {
+      cached_contributors
+      isbn_10
+      isbn_13
+      pages
+      physical_format
+      release_date
+      subtitle
+      title
+      publisher {
+        name
+      }
+    }
+  }
+}`
+	var books []userBook
+	for offset := 0; ; offset += 100 {
+		var out libraryData
+		err := graphql(ctx, client, token, query, map[string]any{
+			"userId": userID,
+			"limit":  100,
+			"offset": offset,
+		}, &out)
+		if err != nil {
+			return nil, err
+		}
+		books = append(books, out.UserBooks...)
+		if len(out.UserBooks) < 100 {
+			return books, nil
+		}
+	}
+}
+
+func graphql(ctx context.Context, client *http.Client, token, query string, variables map[string]any, out any) error {
+	body, err := json.Marshal(graphQLRequest{Query: query, Variables: variables})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("authorization", token)
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("user-agent", "hardcover-goodreads/0.2")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("Hardcover API returned HTTP %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var payload graphQLResponse[json.RawMessage]
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil {
+		return err
+	}
+	if len(payload.Errors) > 0 {
+		return errors.New(payload.Errors[0].Message)
+	}
+
+	decoder = json.NewDecoder(bytes.NewReader(payload.Data))
+	decoder.UseNumber()
+	return decoder.Decode(out)
+}
+
+func csvFile(books []userBook) ([]byte, error) {
+	var buf bytes.Buffer
+	writer := csv.NewWriter(&buf)
+	if err := writer.Write(csvColumns); err != nil {
+		return nil, err
+	}
+	for _, book := range books {
+		if err := writer.Write(csvRow(book)); err != nil {
+			return nil, err
+		}
+	}
+	writer.Flush()
+	return buf.Bytes(), writer.Error()
+}
+
+func csvRow(ub userBook) []string {
+	ed := ub.Edition
+	names := contributorNames(nil)
+	if ed != nil {
+		names = contributorNames(ed.CachedContributors)
+	}
+	if len(names) == 0 {
+		names = contributorNames(ub.Book.CachedContributors)
+	}
+
+	shelf := statusToShelf[ub.StatusID]
+	if shelf == "" {
+		shelf = "to-read"
+	}
+	readCount := ub.ReadCount
+	if readCount == 0 && shelf == "read" {
+		readCount = 1
+	}
+
+	editionTitle, editionSubtitle, isbn10, isbn13, binding, publisherName, editionDate, editionPages := "", "", "", "", "", "", "", any(nil)
+	if ed != nil {
+		editionTitle = ed.Title
+		editionSubtitle = ed.Subtitle
+		isbn10 = ed.ISBN10
+		isbn13 = ed.ISBN13
+		binding = ed.PhysicalFormat
+		editionDate = ed.ReleaseDate
+		editionPages = ed.Pages
+		if ed.Publisher != nil {
+			publisherName = ed.Publisher.Name
+		}
+	}
+
+	releaseDate := editionDate
+	if releaseDate == "" {
+		releaseDate = ub.Book.ReleaseDate
+	}
+
+	return []string{
+		"",
+		bookTitle(editionTitle, editionSubtitle, ub.Book.Title, ub.Book.Subtitle),
+		first(names),
+		"",
+		strings.Join(rest(names), ", "),
+		goodreadsISBN(isbn10),
+		goodreadsISBN(isbn13),
+		goodreadsRating(ub.Rating),
+		"",
+		publisherName,
+		binding,
+		stringValue(firstNonNil(editionPages, ub.Book.Pages)),
+		year(releaseDate),
+		year(ub.Book.ReleaseDate),
+		goodreadsDate(firstNonEmpty(ub.LastReadDate, ub.FirstReadDate)),
+		goodreadsDate(firstNonEmpty(ub.DateAdded, time.Now().Format(time.DateOnly))),
+		shelf,
+		shelf,
+		shelf,
+		firstNonEmpty(ub.ReviewRaw, ub.Review),
+		boolString(ub.ReviewHasSpoilers),
+		ub.PrivateNotes,
+		strconv.Itoa(readCount),
+		stringValue(ub.OwnedCopies),
+	}
+}
+
+func contributorNames(value any) []string {
+	switch v := value.(type) {
+	case nil:
+		return nil
+	case string:
+		var decoded any
+		if json.Unmarshal([]byte(v), &decoded) == nil {
+			return contributorNames(decoded)
+		}
+		return []string{strings.TrimSpace(v)}
+	case []any:
+		var names []string
+		for _, item := range v {
+			names = append(names, contributorNames(item)...)
+		}
+		return unique(names)
+	case map[string]any:
+		for _, key := range []string{"name", "author_name"} {
+			if s, ok := v[key].(string); ok && strings.TrimSpace(s) != "" {
+				return []string{s}
+			}
+		}
+		for _, key := range []string{"author", "authors", "contributor", "contributors", "contributions"} {
+			if names := contributorNames(v[key]); len(names) > 0 {
+				return names
+			}
+		}
+	}
+	return nil
+}
+
+func unique(values []string) []string {
+	seen := map[string]bool{}
+	out := values[:0]
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		key := strings.ToLower(value)
+		if value != "" && !seen[key] {
+			seen[key] = true
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func bookTitle(editionTitle, editionSubtitle, bookTitle, bookSubtitle string) string {
+	title := firstNonEmpty(editionTitle, bookTitle)
+	subtitle := firstNonEmpty(editionSubtitle, bookSubtitle)
+	if subtitle != "" && !strings.Contains(title, subtitle) {
+		return title + ": " + subtitle
+	}
+	return title
+}
+
+func goodreadsISBN(value string) string {
+	digits := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, value)
+	if digits == "" {
+		return ""
+	}
+	return `="` + digits + `"`
+}
+
+func goodreadsRating(value any) string {
+	n, ok := number(value)
+	if !ok {
+		return "0"
+	}
+	return strconv.Itoa(max(0, min(5, int(math.Floor(n+0.5)))))
+}
+
+func number(value any) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case json.Number:
+		n, err := v.Float64()
+		return n, err == nil
+	case string:
+		n, err := strconv.ParseFloat(v, 64)
+		return n, err == nil
+	case int:
+		return float64(v), true
+	}
+	return 0, false
+}
+
+func normalizeToken(token string) string {
+	token = strings.TrimSpace(token)
+	if token != "" && !strings.HasPrefix(strings.ToLower(token), "bearer ") {
+		return "Bearer " + token
+	}
+	return token
+}
+
+func goodreadsDate(value string) string { return strings.ReplaceAll(value, "-", "/") }
+
+func year(value string) string {
+	if len(value) >= 4 {
+		return value[:4]
+	}
+	return ""
+}
+
+func boolString(value bool) string {
+	if value {
+		return "true"
+	}
+	return ""
+}
+
+func stringValue(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case int:
+		return strconv.Itoa(v)
+	case float64:
+		return strconv.Itoa(int(v))
+	case json.Number:
+		return v.String()
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
+func first(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func rest(values []string) []string {
+	if len(values) < 2 {
+		return nil
+	}
+	return values[1:]
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstNonNil(values ...any) any {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func randomID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}

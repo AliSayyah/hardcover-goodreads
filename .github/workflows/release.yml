@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: |
+          set -eu
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            name="hardcover-goodreads_${goos}_${goarch}"
+            out="hardcover-goodreads"
+            archive="${name}.tar.gz"
+            if [ "$goos" = "windows" ]; then
+              out="hardcover-goodreads.exe"
+              archive="${name}.zip"
+            fi
+            mkdir -p "dist/$name"
+            GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o "dist/$name/$out" .
+            cp README.md LICENSE "dist/$name/"
+            if [ "$goos" = "windows" ]; then
+              (cd "dist/$name" && zip -q "../$archive" "$out" README.md LICENSE)
+            else
+              tar -czf "dist/$archive" -C "dist/$name" "$out" README.md LICENSE
+            fi
+          done
+          (cd dist && sha256sum *.tar.gz *.zip > checksums.txt)
+      - run: gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.zip dist/checksums.txt --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
