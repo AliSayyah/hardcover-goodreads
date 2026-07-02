@@ -12,7 +12,7 @@ a Goodreads import CSV you upload manually.
 curl -fsSL https://raw.githubusercontent.com/AliSayyah/hardcover-goodreads/main/install.sh | sh
 ```
 
-Then run:
+Make sure `~/.local/bin` is on your `PATH`, then run:
 
 ```bash
 hardcover-goodreads
@@ -20,21 +20,39 @@ hardcover-goodreads
 
 It opens <http://localhost:8080> automatically.
 
-## Use
+## Quick Start
 
 1. Get your Hardcover token from <https://hardcover.app/account/api>.
-2. Run from source:
+2. Run `hardcover-goodreads`.
+3. Paste the token into the local page.
+4. Check "Save token in OS keychain" if you want to reuse it later.
+5. Export the CSV, then upload it at <https://www.goodreads.com/review/import>.
+
+The JSON download is the full local backup.
+
+## Usage
+
+```bash
+hardcover-goodreads                 # start on :8080 and open the browser
+hardcover-goodreads -no-open        # start without opening the browser
+hardcover-goodreads -addr :9090     # use a different port
+hardcover-goodreads -version
+```
+
+## Development
+
+Run from source:
 
 ```bash
 go run -buildvcs=false .
 ```
 
-3. The browser opens <http://localhost:8080>.
-4. Export the CSV, then upload it at <https://www.goodreads.com/review/import>.
+Run the checks:
 
-The JSON download is the full local backup.
-Check "Save token in OS keychain" after pasting your token once to reuse it later.
-Use `-no-open` when running on a headless machine.
+```bash
+go test ./...
+go build -buildvcs=false ./...
+```
 
 ## Why this shape
 
@@ -43,18 +61,11 @@ Use `-no-open` when running on a headless machine.
 - Hardcover token storage uses the OS keychain: macOS Keychain, Windows Credential Manager, or Linux Secret Service.
 - No browser automation that breaks when Goodreads changes HTML or asks for MFA.
 
-Run the check with:
-
-```bash
-go test ./...
-go build -buildvcs=false ./...
-```
-
 ## Release
 
 Push a tag and GitHub Actions will publish binaries:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
